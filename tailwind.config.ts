@@ -53,6 +53,9 @@ export default {
           green: "hsl(var(--google-green))",
           red: "hsl(var(--google-red))",
           yellow: "hsl(var(--google-yellow))",
+          dark: "hsl(var(--google-dark))",
+          "dark-elevated": "hsl(var(--google-dark-elevated))",
+          "dark-surface": "hsl(var(--google-dark-surface))",
         },
         surface: {
           elevated: "hsl(var(--surface-elevated))",
