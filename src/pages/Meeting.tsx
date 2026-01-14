@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useParams, useNavigate, useSearchParams } from "react-router-dom";
 import { motion } from "framer-motion";
 import {
@@ -18,8 +18,11 @@ import {
   Settings,
   Copy,
   Check,
+  Send,
+  Loader2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
 import {
   Tooltip,
@@ -33,12 +36,30 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { useAuth } from "@/contexts/AuthContext";
+import { useMeeting } from "@/hooks/useMeeting";
+import { ScrollArea } from "@/components/ui/scroll-area";
 
 const Meeting = () => {
   const { meetingId } = useParams();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const isHost = searchParams.get("host") === "true";
+  const { user, profile, loading: authLoading } = useAuth();
+
+  const {
+    meeting,
+    participants,
+    chatMessages,
+    localStream,
+    isConnected,
+    error,
+    initializeMedia,
+    joinMeeting,
+    leaveMeeting,
+    updateStatus,
+    sendMessage,
+  } = useMeeting(meetingId || "", user?.id);
 
   const [isMicOn, setIsMicOn] = useState(true);
   const [isVideoOn, setIsVideoOn] = useState(true);
@@ -48,11 +69,62 @@ const Meeting = () => {
   const [showChat, setShowChat] = useState(false);
   const [copied, setCopied] = useState(false);
   const [currentTime, setCurrentTime] = useState(new Date());
+  const [chatInput, setChatInput] = useState("");
+  const [isJoining, setIsJoining] = useState(false);
 
+  const localVideoRef = useRef<HTMLVideoElement>(null);
+  const chatScrollRef = useRef<HTMLDivElement>(null);
+
+  // Redirect to auth if not logged in
+  useEffect(() => {
+    if (!authLoading && !user) {
+      toast.error("Toplantıya katılmak için giriş yapmalısınız");
+      navigate(`/auth?redirect=/meeting/${meetingId}${isHost ? "?host=true" : ""}`);
+    }
+  }, [authLoading, user, navigate, meetingId, isHost]);
+
+  // Initialize media and join meeting
+  useEffect(() => {
+    if (!user || isConnected || isJoining) return;
+
+    const init = async () => {
+      setIsJoining(true);
+      const stream = await initializeMedia(true, true);
+      if (stream) {
+        await joinMeeting(isHost);
+      }
+      setIsJoining(false);
+    };
+
+    init();
+  }, [user, isConnected, isJoining, initializeMedia, joinMeeting, isHost]);
+
+  // Set local video stream
+  useEffect(() => {
+    if (localVideoRef.current && localStream) {
+      localVideoRef.current.srcObject = localStream;
+    }
+  }, [localStream]);
+
+  // Update time
   useEffect(() => {
     const timer = setInterval(() => setCurrentTime(new Date()), 1000);
     return () => clearInterval(timer);
   }, []);
+
+  // Scroll chat to bottom
+  useEffect(() => {
+    if (chatScrollRef.current) {
+      chatScrollRef.current.scrollTop = chatScrollRef.current.scrollHeight;
+    }
+  }, [chatMessages]);
+
+  // Handle errors
+  useEffect(() => {
+    if (error) {
+      toast.error(error);
+    }
+  }, [error]);
 
   const formatTime = (date: Date) => {
     return date.toLocaleTimeString("tr-TR", {
@@ -69,19 +141,40 @@ const Meeting = () => {
     setTimeout(() => setCopied(false), 2000);
   };
 
-  const handleEndCall = () => {
+  const handleEndCall = async () => {
+    await leaveMeeting();
     toast.success("Toplantıdan ayrıldınız");
     navigate("/");
   };
 
-  const toggleMic = () => {
-    setIsMicOn(!isMicOn);
-    toast.info(isMicOn ? "Mikrofon kapatıldı" : "Mikrofon açıldı");
+  const toggleMic = async () => {
+    const newState = !isMicOn;
+    setIsMicOn(newState);
+    
+    // Mute/unmute local audio track
+    if (localStream) {
+      localStream.getAudioTracks().forEach((track) => {
+        track.enabled = newState;
+      });
+    }
+
+    await updateStatus({ is_muted: !newState });
+    toast.info(newState ? "Mikrofon açıldı" : "Mikrofon kapatıldı");
   };
 
-  const toggleVideo = () => {
-    setIsVideoOn(!isVideoOn);
-    toast.info(isVideoOn ? "Kamera kapatıldı" : "Kamera açıldı");
+  const toggleVideo = async () => {
+    const newState = !isVideoOn;
+    setIsVideoOn(newState);
+
+    // Enable/disable local video track
+    if (localStream) {
+      localStream.getVideoTracks().forEach((track) => {
+        track.enabled = newState;
+      });
+    }
+
+    await updateStatus({ is_video_on: newState });
+    toast.info(newState ? "Kamera açıldı" : "Kamera kapatıldı");
   };
 
   const toggleScreenShare = () => {
@@ -91,18 +184,35 @@ const Meeting = () => {
     );
   };
 
-  const toggleHandRaise = () => {
-    setIsHandRaised(!isHandRaised);
-    toast.info(isHandRaised ? "Elinizi indirdiniz" : "Elinizi kaldırdınız");
+  const toggleHandRaise = async () => {
+    const newState = !isHandRaised;
+    setIsHandRaised(newState);
+    await updateStatus({ is_hand_raised: newState });
+    toast.info(newState ? "Elinizi kaldırdınız" : "Elinizi indirdiniz");
   };
 
-  // Simulated participants
-  const participants = [
-    { id: 1, name: "Siz", isYou: true, isMuted: !isMicOn, hasVideo: isVideoOn },
-    { id: 2, name: "Ahmet Yılmaz", isYou: false, isMuted: false, hasVideo: true },
-    { id: 3, name: "Ayşe Demir", isYou: false, isMuted: true, hasVideo: true },
-    { id: 4, name: "Mehmet Kaya", isYou: false, isMuted: false, hasVideo: false },
-  ];
+  const handleSendMessage = async () => {
+    if (!chatInput.trim()) return;
+    await sendMessage(chatInput);
+    setChatInput("");
+  };
+
+  if (authLoading || isJoining) {
+    return (
+      <div className="h-screen bg-google-dark flex items-center justify-center">
+        <div className="text-center">
+          <Loader2 className="h-12 w-12 animate-spin text-google-blue mx-auto mb-4" />
+          <p className="text-white/70">
+            {authLoading ? "Oturum kontrol ediliyor..." : "Toplantıya bağlanılıyor..."}
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  // Get current user as participant for display
+  const currentUserParticipant = participants.find((p) => p.user_id === user?.id);
+  const otherParticipants = participants.filter((p) => p.user_id !== user?.id);
 
   return (
     <div className="h-screen bg-google-dark flex flex-col overflow-hidden">
@@ -118,6 +228,12 @@ const Meeting = () => {
           </span>
           <span className="text-white/50 text-sm">|</span>
           <span className="text-white/70 text-sm">{meetingId}</span>
+          {isConnected && (
+            <span className="text-green-400 text-xs flex items-center gap-1">
+              <span className="w-2 h-2 bg-green-400 rounded-full animate-pulse" />
+              Bağlı
+            </span>
+          )}
         </div>
 
         <div className="flex items-center gap-2">
@@ -145,46 +261,84 @@ const Meeting = () => {
             initial={{ opacity: 0, scale: 0.95 }}
             animate={{ opacity: 1, scale: 1 }}
             transition={{ delay: 0.1 }}
-            className="h-full grid grid-cols-1 md:grid-cols-2 gap-3"
+            className={`h-full grid gap-3 ${
+              participants.length <= 1
+                ? "grid-cols-1"
+                : participants.length <= 4
+                ? "grid-cols-1 md:grid-cols-2"
+                : "grid-cols-2 md:grid-cols-3"
+            }`}
           >
-            {participants.map((participant, index) => (
+            {/* Local Video (You) */}
+            <motion.div
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="relative rounded-lg overflow-hidden bg-google-dark-surface flex items-center justify-center"
+            >
+              {isVideoOn && localStream ? (
+                <video
+                  ref={localVideoRef}
+                  autoPlay
+                  muted
+                  playsInline
+                  className="absolute inset-0 w-full h-full object-cover"
+                />
+              ) : (
+                <div className="w-20 h-20 rounded-full bg-google-blue flex items-center justify-center">
+                  <span className="text-2xl font-medium text-white">
+                    {profile?.display_name?.charAt(0) || "?"}
+                  </span>
+                </div>
+              )}
+
+              {/* Participant Info */}
+              <div className="absolute bottom-3 left-3 flex items-center gap-2 z-10">
+                <span className="text-white text-sm font-medium bg-black/40 px-2 py-1 rounded">
+                  Siz
+                </span>
+                {!isMicOn && (
+                  <div className="w-6 h-6 rounded-full bg-red-500/80 flex items-center justify-center">
+                    <MicOff className="h-3 w-3 text-white" />
+                  </div>
+                )}
+              </div>
+            </motion.div>
+
+            {/* Remote Participants */}
+            {otherParticipants.map((participant, index) => (
               <motion.div
                 key={participant.id}
                 initial={{ opacity: 0, y: 20 }}
                 animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: 0.1 + index * 0.05 }}
-                className={`relative rounded-lg overflow-hidden ${
-                  participant.hasVideo
-                    ? "bg-gradient-to-br from-google-dark-surface to-google-dark"
-                    : "bg-google-dark-surface"
-                } flex items-center justify-center`}
+                transition={{ delay: 0.1 + (index + 1) * 0.05 }}
+                className="relative rounded-lg overflow-hidden bg-google-dark-surface flex items-center justify-center"
               >
-                {participant.hasVideo ? (
-                  <div className="absolute inset-0 bg-gradient-to-br from-google-blue/20 to-google-green/20" />
+                {participant.stream && participant.is_video_on ? (
+                  <VideoStream stream={participant.stream} />
                 ) : (
                   <div className="w-20 h-20 rounded-full bg-google-blue flex items-center justify-center">
                     <span className="text-2xl font-medium text-white">
-                      {participant.name.charAt(0)}
+                      {participant.display_name?.charAt(0) || "?"}
                     </span>
                   </div>
                 )}
 
                 {/* Participant Info */}
-                <div className="absolute bottom-3 left-3 flex items-center gap-2">
+                <div className="absolute bottom-3 left-3 flex items-center gap-2 z-10">
                   <span className="text-white text-sm font-medium bg-black/40 px-2 py-1 rounded">
-                    {participant.isYou ? "Siz" : participant.name}
+                    {participant.display_name}
                   </span>
-                  {participant.isMuted && (
+                  {participant.is_muted && (
                     <div className="w-6 h-6 rounded-full bg-red-500/80 flex items-center justify-center">
                       <MicOff className="h-3 w-3 text-white" />
                     </div>
                   )}
+                  {participant.is_hand_raised && (
+                    <div className="w-6 h-6 rounded-full bg-google-yellow flex items-center justify-center">
+                      <Hand className="h-3 w-3 text-google-dark" />
+                    </div>
+                  )}
                 </div>
-
-                {/* Pin button */}
-                <button className="absolute top-3 right-3 w-8 h-8 rounded-full bg-black/40 flex items-center justify-center opacity-0 hover:opacity-100 transition-opacity">
-                  <Maximize2 className="h-4 w-4 text-white" />
-                </button>
               </motion.div>
             ))}
           </motion.div>
@@ -203,24 +357,27 @@ const Meeting = () => {
                 Katılımcılar ({participants.length})
               </h3>
             </div>
-            <div className="flex-1 overflow-y-auto p-2">
-              {participants.map((p) => (
-                <div
-                  key={p.id}
-                  className="flex items-center gap-3 p-3 rounded-lg hover:bg-white/5"
-                >
-                  <div className="w-8 h-8 rounded-full bg-google-blue flex items-center justify-center">
-                    <span className="text-sm text-white">
-                      {p.name.charAt(0)}
+            <ScrollArea className="flex-1">
+              <div className="p-2">
+                {participants.map((p) => (
+                  <div
+                    key={p.id}
+                    className="flex items-center gap-3 p-3 rounded-lg hover:bg-white/5"
+                  >
+                    <div className="w-8 h-8 rounded-full bg-google-blue flex items-center justify-center">
+                      <span className="text-sm text-white">
+                        {p.display_name?.charAt(0) || "?"}
+                      </span>
+                    </div>
+                    <span className="text-white/90 text-sm flex-1">
+                      {p.display_name} {p.user_id === user?.id && "(Siz)"}
                     </span>
+                    {p.is_muted && <MicOff className="h-4 w-4 text-white/50" />}
+                    {p.is_hand_raised && <Hand className="h-4 w-4 text-google-yellow" />}
                   </div>
-                  <span className="text-white/90 text-sm flex-1">
-                    {p.name} {p.isYou && "(Siz)"}
-                  </span>
-                  {p.isMuted && <MicOff className="h-4 w-4 text-white/50" />}
-                </div>
-              ))}
-            </div>
+                ))}
+              </div>
+            </ScrollArea>
           </motion.div>
         )}
 
@@ -235,17 +392,49 @@ const Meeting = () => {
             <div className="p-4 border-b border-white/5">
               <h3 className="text-white font-medium">Toplantı içi mesajlar</h3>
             </div>
-            <div className="flex-1 flex items-center justify-center">
-              <p className="text-white/50 text-sm text-center px-4">
-                Mesajlar herkese görünür ve toplantı bittiğinde silinir
-              </p>
+            <div ref={chatScrollRef} className="flex-1 overflow-y-auto p-3 space-y-3">
+              {chatMessages.length === 0 ? (
+                <p className="text-white/50 text-sm text-center py-8">
+                  Mesajlar herkese görünür ve toplantı bittiğinde silinir
+                </p>
+              ) : (
+                chatMessages.map((msg) => (
+                  <div key={msg.id} className="space-y-1">
+                    <div className="flex items-center gap-2">
+                      <span className="text-white/90 text-sm font-medium">
+                        {msg.sender_id === user?.id ? "Siz" : msg.sender_name}
+                      </span>
+                      <span className="text-white/40 text-xs">
+                        {new Date(msg.created_at).toLocaleTimeString("tr-TR", {
+                          hour: "2-digit",
+                          minute: "2-digit",
+                        })}
+                      </span>
+                    </div>
+                    <p className="text-white/80 text-sm">{msg.content}</p>
+                  </div>
+                ))
+              )}
             </div>
             <div className="p-3 border-t border-white/5">
-              <input
-                type="text"
-                placeholder="Herkese mesaj gönder"
-                className="w-full bg-white/5 border border-white/10 rounded-full px-4 py-2 text-white text-sm placeholder:text-white/40 focus:outline-none focus:border-google-blue"
-              />
+              <div className="flex gap-2">
+                <Input
+                  type="text"
+                  placeholder="Herkese mesaj gönder"
+                  value={chatInput}
+                  onChange={(e) => setChatInput(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && handleSendMessage()}
+                  className="flex-1 bg-white/5 border-white/10 text-white placeholder:text-white/40"
+                />
+                <Button
+                  size="icon"
+                  onClick={handleSendMessage}
+                  disabled={!chatInput.trim()}
+                  className="bg-google-blue hover:bg-google-blue-hover"
+                >
+                  <Send className="h-4 w-4" />
+                </Button>
+              </div>
             </div>
           </motion.div>
         )}
@@ -457,6 +646,26 @@ const Meeting = () => {
         </TooltipProvider>
       </motion.div>
     </div>
+  );
+};
+
+// Video stream component for remote participants
+const VideoStream = ({ stream }: { stream: MediaStream }) => {
+  const videoRef = useRef<HTMLVideoElement>(null);
+
+  useEffect(() => {
+    if (videoRef.current) {
+      videoRef.current.srcObject = stream;
+    }
+  }, [stream]);
+
+  return (
+    <video
+      ref={videoRef}
+      autoPlay
+      playsInline
+      className="absolute inset-0 w-full h-full object-cover"
+    />
   );
 };
 
