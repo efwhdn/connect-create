@@ -307,34 +307,39 @@ export const useMeeting = (meetingCode: string, userId: string | undefined) => {
         filter: `meeting_id=eq.${meeting.id}`,
       },
       async (payload) => {
-        // Fetch updated participants with profiles
-        const { data } = await supabase
+        // Fetch updated participants
+        const { data: participantsData } = await supabase
           .from("meeting_participants")
-          .select(`
-            id,
-            user_id,
-            is_muted,
-            is_video_on,
-            is_hand_raised,
-            profiles:user_id (display_name, avatar_url)
-          `)
+          .select(`id, user_id, is_muted, is_video_on, is_hand_raised, status`)
           .eq("meeting_id", meeting.id)
           .is("left_at", null);
 
-        if (data) {
-          const formattedParticipants = data.map((p: any) => ({
-            id: p.id,
-            user_id: p.user_id,
-            display_name: p.profiles?.display_name || "Bilinmeyen",
-            avatar_url: p.profiles?.avatar_url,
-            is_muted: p.is_muted,
-            is_video_on: p.is_video_on,
-            is_hand_raised: p.is_hand_raised,
-            status: p.status as 'waiting' | 'approved' | 'rejected',
-            stream: peerConnections.current.get(p.user_id)
-              ? participants.find((pp) => pp.user_id === p.user_id)?.stream
-              : undefined,
-          }));
+        if (participantsData) {
+          // Fetch profiles for all participants
+          const userIds = participantsData.map(p => p.user_id);
+          const { data: profilesData } = await supabase
+            .from("profiles")
+            .select("user_id, display_name, avatar_url")
+            .in("user_id", userIds);
+
+          const profilesMap = new Map(profilesData?.map(p => [p.user_id, p]) || []);
+
+          const formattedParticipants = participantsData.map((p: any) => {
+            const profile = profilesMap.get(p.user_id);
+            return {
+              id: p.id,
+              user_id: p.user_id,
+              display_name: profile?.display_name || "Bilinmeyen",
+              avatar_url: profile?.avatar_url || null,
+              is_muted: p.is_muted,
+              is_video_on: p.is_video_on,
+              is_hand_raised: p.is_hand_raised,
+              status: p.status as 'waiting' | 'approved' | 'rejected',
+              stream: peerConnections.current.get(p.user_id)
+                ? participants.find((pp) => pp.user_id === p.user_id)?.stream
+                : undefined,
+            };
+          });
 
           // Separate approved and waiting participants
           const approved = formattedParticipants.filter((p: Participant) => p.status === 'approved');
@@ -424,31 +429,35 @@ export const useMeeting = (meetingCode: string, userId: string | undefined) => {
 
     // Fetch initial participants
     (async () => {
-      const { data } = await supabase
+      const { data: participantsData } = await supabase
         .from("meeting_participants")
-        .select(`
-          id,
-          user_id,
-          is_muted,
-          is_video_on,
-          is_hand_raised,
-          status,
-          profiles:user_id (display_name, avatar_url)
-        `)
+        .select(`id, user_id, is_muted, is_video_on, is_hand_raised, status`)
         .eq("meeting_id", meeting.id)
         .is("left_at", null);
 
-      if (data) {
-        const formattedParticipants = data.map((p: any) => ({
-          id: p.id,
-          user_id: p.user_id,
-          display_name: p.profiles?.display_name || "Bilinmeyen",
-          avatar_url: p.profiles?.avatar_url,
-          is_muted: p.is_muted,
-          is_video_on: p.is_video_on,
-          is_hand_raised: p.is_hand_raised,
-          status: p.status as 'waiting' | 'approved' | 'rejected',
-        }));
+      if (participantsData) {
+        // Fetch profiles for all participants
+        const userIds = participantsData.map(p => p.user_id);
+        const { data: profilesData } = await supabase
+          .from("profiles")
+          .select("user_id, display_name, avatar_url")
+          .in("user_id", userIds);
+
+        const profilesMap = new Map(profilesData?.map(p => [p.user_id, p]) || []);
+
+        const formattedParticipants = participantsData.map((p: any) => {
+          const profile = profilesMap.get(p.user_id);
+          return {
+            id: p.id,
+            user_id: p.user_id,
+            display_name: profile?.display_name || "Bilinmeyen",
+            avatar_url: profile?.avatar_url || null,
+            is_muted: p.is_muted,
+            is_video_on: p.is_video_on,
+            is_hand_raised: p.is_hand_raised,
+            status: p.status as 'waiting' | 'approved' | 'rejected',
+          };
+        });
 
         const approved = formattedParticipants.filter((p) => p.status === 'approved');
         const waiting = formattedParticipants.filter((p) => p.status === 'waiting');
