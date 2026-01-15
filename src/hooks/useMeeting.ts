@@ -11,6 +11,7 @@ interface Participant {
   is_muted: boolean;
   is_video_on: boolean;
   is_hand_raised: boolean;
+  status: 'waiting' | 'approved' | 'rejected';
   stream?: MediaStream;
 }
 
@@ -33,9 +34,11 @@ interface Meeting {
 export const useMeeting = (meetingCode: string, userId: string | undefined) => {
   const [meeting, setMeeting] = useState<Meeting | null>(null);
   const [participants, setParticipants] = useState<Participant[]>([]);
+  const [waitingParticipants, setWaitingParticipants] = useState<Participant[]>([]);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [isConnected, setIsConnected] = useState(false);
+  const [myStatus, setMyStatus] = useState<'waiting' | 'approved' | 'rejected' | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const peerConnections = useRef<Map<string, RTCPeerConnection>>(new Map());
@@ -102,6 +105,10 @@ export const useMeeting = (meetingCode: string, userId: string | undefined) => {
 
       setMeeting(existingMeeting);
 
+      // Determine status based on whether user is host
+      const isUserHost = existingMeeting.host_id === userId;
+      const participantStatus = isUserHost ? 'approved' : 'waiting';
+
       // Join as participant
       const { error: joinError } = await supabase
         .from("meeting_participants")
@@ -112,12 +119,14 @@ export const useMeeting = (meetingCode: string, userId: string | undefined) => {
           is_video_on: true,
           is_hand_raised: false,
           left_at: null,
+          status: participantStatus,
         }, {
           onConflict: 'meeting_id,user_id'
         });
 
       if (joinError) throw joinError;
 
+      setMyStatus(participantStatus);
       setIsConnected(true);
       return existingMeeting;
     } catch (err: any) {
@@ -181,6 +190,28 @@ export const useMeeting = (meetingCode: string, userId: string | undefined) => {
       sender_id: userId,
       content: content.trim(),
     });
+  }, [meeting, userId]);
+
+  // Approve participant (host only)
+  const approveParticipant = useCallback(async (participantUserId: string) => {
+    if (!meeting || !userId) return;
+
+    await supabase
+      .from("meeting_participants")
+      .update({ status: 'approved' })
+      .eq("meeting_id", meeting.id)
+      .eq("user_id", participantUserId);
+  }, [meeting, userId]);
+
+  // Reject participant (host only)
+  const rejectParticipant = useCallback(async (participantUserId: string) => {
+    if (!meeting || !userId) return;
+
+    await supabase
+      .from("meeting_participants")
+      .update({ status: 'rejected' })
+      .eq("meeting_id", meeting.id)
+      .eq("user_id", participantUserId);
   }, [meeting, userId]);
 
   // Create peer connection for a participant
@@ -299,27 +330,44 @@ export const useMeeting = (meetingCode: string, userId: string | undefined) => {
             is_muted: p.is_muted,
             is_video_on: p.is_video_on,
             is_hand_raised: p.is_hand_raised,
+            status: p.status as 'waiting' | 'approved' | 'rejected',
             stream: peerConnections.current.get(p.user_id)
               ? participants.find((pp) => pp.user_id === p.user_id)?.stream
               : undefined,
           }));
 
-          setParticipants(formattedParticipants);
+          // Separate approved and waiting participants
+          const approved = formattedParticipants.filter((p: Participant) => p.status === 'approved');
+          const waiting = formattedParticipants.filter((p: Participant) => p.status === 'waiting');
+          
+          setParticipants(approved);
+          setWaitingParticipants(waiting);
 
-          // Create offers for new participants
-          if (payload.eventType === "INSERT" && (payload.new as any).user_id !== userId && localStream) {
-            const newUserId = (payload.new as any).user_id;
-            const pc = createPeerConnection(newUserId, localStream);
-            const offer = await pc.createOffer();
-            await pc.setLocalDescription(offer);
+          // Check if current user's status changed
+          const myParticipant = formattedParticipants.find((p: Participant) => p.user_id === userId);
+          if (myParticipant) {
+            setMyStatus(myParticipant.status);
+          }
 
-            await supabase.from("signaling_messages").insert({
-              meeting_id: meeting.id,
-              sender_id: userId,
-              receiver_id: newUserId,
-              message_type: "offer",
-              payload: JSON.parse(JSON.stringify({ offer })) as Json,
-            });
+          // Create offers for new approved participants
+          if (payload.eventType === "INSERT" || payload.eventType === "UPDATE") {
+            const newParticipant = payload.new as any;
+            if (newParticipant.user_id !== userId && newParticipant.status === 'approved' && localStream) {
+              const existingPc = peerConnections.current.get(newParticipant.user_id);
+              if (!existingPc) {
+                const pc = createPeerConnection(newParticipant.user_id, localStream);
+                const offer = await pc.createOffer();
+                await pc.setLocalDescription(offer);
+
+                await supabase.from("signaling_messages").insert({
+                  meeting_id: meeting.id,
+                  sender_id: userId,
+                  receiver_id: newParticipant.user_id,
+                  message_type: "offer",
+                  payload: JSON.parse(JSON.stringify({ offer })) as Json,
+                });
+              }
+            }
           }
         }
       }
@@ -384,23 +432,35 @@ export const useMeeting = (meetingCode: string, userId: string | undefined) => {
           is_muted,
           is_video_on,
           is_hand_raised,
+          status,
           profiles:user_id (display_name, avatar_url)
         `)
         .eq("meeting_id", meeting.id)
         .is("left_at", null);
 
       if (data) {
-        setParticipants(
-          data.map((p: any) => ({
-            id: p.id,
-            user_id: p.user_id,
-            display_name: p.profiles?.display_name || "Bilinmeyen",
-            avatar_url: p.profiles?.avatar_url,
-            is_muted: p.is_muted,
-            is_video_on: p.is_video_on,
-            is_hand_raised: p.is_hand_raised,
-          }))
-        );
+        const formattedParticipants = data.map((p: any) => ({
+          id: p.id,
+          user_id: p.user_id,
+          display_name: p.profiles?.display_name || "Bilinmeyen",
+          avatar_url: p.profiles?.avatar_url,
+          is_muted: p.is_muted,
+          is_video_on: p.is_video_on,
+          is_hand_raised: p.is_hand_raised,
+          status: p.status as 'waiting' | 'approved' | 'rejected',
+        }));
+
+        const approved = formattedParticipants.filter((p) => p.status === 'approved');
+        const waiting = formattedParticipants.filter((p) => p.status === 'waiting');
+        
+        setParticipants(approved);
+        setWaitingParticipants(waiting);
+
+        // Check current user's status
+        const myParticipant = formattedParticipants.find((p) => p.user_id === userId);
+        if (myParticipant) {
+          setMyStatus(myParticipant.status);
+        }
       }
     })();
 
@@ -412,14 +472,18 @@ export const useMeeting = (meetingCode: string, userId: string | undefined) => {
   return {
     meeting,
     participants,
+    waitingParticipants,
     chatMessages,
     localStream,
     isConnected,
+    myStatus,
     error,
     initializeMedia,
     joinMeeting,
     leaveMeeting,
     updateStatus,
     sendMessage,
+    approveParticipant,
+    rejectParticipant,
   };
 };
