@@ -20,6 +20,10 @@ import {
   Check,
   Send,
   Loader2,
+  Clock,
+  CheckCircle,
+  XCircle,
+  ShieldAlert,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -50,15 +54,19 @@ const Meeting = () => {
   const {
     meeting,
     participants,
+    waitingParticipants,
     chatMessages,
     localStream,
     isConnected,
+    myStatus,
     error,
     initializeMedia,
     joinMeeting,
     leaveMeeting,
     updateStatus,
     sendMessage,
+    approveParticipant,
+    rejectParticipant,
   } = useMeeting(meetingId || "", user?.id);
 
   const [isMicOn, setIsMicOn] = useState(true);
@@ -67,6 +75,7 @@ const Meeting = () => {
   const [isHandRaised, setIsHandRaised] = useState(false);
   const [showParticipants, setShowParticipants] = useState(false);
   const [showChat, setShowChat] = useState(false);
+  const [showWaitingRoom, setShowWaitingRoom] = useState(false);
   const [copied, setCopied] = useState(false);
   const [currentTime, setCurrentTime] = useState(new Date());
   const [chatInput, setChatInput] = useState("");
@@ -210,6 +219,106 @@ const Meeting = () => {
     );
   }
 
+  // Waiting room screen for non-host participants
+  if (myStatus === 'waiting') {
+    return (
+      <div className="h-screen bg-google-dark flex items-center justify-center">
+        <motion.div
+          initial={{ opacity: 0, scale: 0.95 }}
+          animate={{ opacity: 1, scale: 1 }}
+          className="text-center max-w-md mx-auto p-8"
+        >
+          <div className="w-20 h-20 rounded-full bg-google-blue/20 flex items-center justify-center mx-auto mb-6">
+            <Clock className="h-10 w-10 text-google-blue animate-pulse" />
+          </div>
+          <h1 className="text-2xl font-semibold text-white mb-3">
+            Bekleme Odasındasınız
+          </h1>
+          <p className="text-white/60 mb-6">
+            Toplantı sahibi sizi onayladığında otomatik olarak toplantıya katılacaksınız.
+          </p>
+          
+          {/* Preview Video */}
+          {localStream && isVideoOn && (
+            <div className="relative w-48 h-36 mx-auto mb-6 rounded-lg overflow-hidden bg-google-dark-surface">
+              <video
+                ref={localVideoRef}
+                autoPlay
+                muted
+                playsInline
+                className="absolute inset-0 w-full h-full object-cover"
+              />
+            </div>
+          )}
+
+          <div className="flex justify-center gap-3 mb-6">
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={toggleMic}
+              className={`w-12 h-12 rounded-full ${
+                isMicOn
+                  ? "bg-google-dark-surface hover:bg-white/10 text-white"
+                  : "bg-red-500 hover:bg-red-600 text-white"
+              }`}
+            >
+              {isMicOn ? <Mic className="h-5 w-5" /> : <MicOff className="h-5 w-5" />}
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={toggleVideo}
+              className={`w-12 h-12 rounded-full ${
+                isVideoOn
+                  ? "bg-google-dark-surface hover:bg-white/10 text-white"
+                  : "bg-red-500 hover:bg-red-600 text-white"
+              }`}
+            >
+              {isVideoOn ? <Video className="h-5 w-5" /> : <VideoOff className="h-5 w-5" />}
+            </Button>
+          </div>
+
+          <Button
+            variant="outline"
+            onClick={handleEndCall}
+            className="text-white/70 border-white/20 hover:bg-white/10"
+          >
+            İptal et
+          </Button>
+        </motion.div>
+      </div>
+    );
+  }
+
+  // Rejected screen
+  if (myStatus === 'rejected') {
+    return (
+      <div className="h-screen bg-google-dark flex items-center justify-center">
+        <motion.div
+          initial={{ opacity: 0, scale: 0.95 }}
+          animate={{ opacity: 1, scale: 1 }}
+          className="text-center max-w-md mx-auto p-8"
+        >
+          <div className="w-20 h-20 rounded-full bg-red-500/20 flex items-center justify-center mx-auto mb-6">
+            <ShieldAlert className="h-10 w-10 text-red-500" />
+          </div>
+          <h1 className="text-2xl font-semibold text-white mb-3">
+            Katılım Reddedildi
+          </h1>
+          <p className="text-white/60 mb-6">
+            Toplantı sahibi katılım talebinizi reddetti.
+          </p>
+          <Button
+            onClick={() => navigate("/")}
+            className="bg-google-blue hover:bg-google-blue-hover"
+          >
+            Ana Sayfaya Dön
+          </Button>
+        </motion.div>
+      </div>
+    );
+  }
+
   // Get current user as participant for display
   const currentUserParticipant = participants.find((p) => p.user_id === user?.id);
   const otherParticipants = participants.filter((p) => p.user_id !== user?.id);
@@ -233,6 +342,17 @@ const Meeting = () => {
               <span className="w-2 h-2 bg-green-400 rounded-full animate-pulse" />
               Bağlı
             </span>
+          )}
+          {isHost && waitingParticipants.length > 0 && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setShowWaitingRoom(!showWaitingRoom)}
+              className="text-google-yellow hover:text-google-yellow hover:bg-google-yellow/10 gap-2"
+            >
+              <Clock className="h-4 w-4" />
+              {waitingParticipants.length} bekliyor
+            </Button>
           )}
         </div>
 
@@ -436,6 +556,78 @@ const Meeting = () => {
                 </Button>
               </div>
             </div>
+          </motion.div>
+        )}
+
+        {/* Side Panel - Waiting Room (Host Only) */}
+        {showWaitingRoom && isHost && (
+          <motion.div
+            initial={{ opacity: 0, x: 20 }}
+            animate={{ opacity: 1, x: 0 }}
+            exit={{ opacity: 0, x: 20 }}
+            className="w-80 bg-google-dark-elevated border-l border-white/5 flex flex-col"
+          >
+            <div className="p-4 border-b border-white/5">
+              <h3 className="text-white font-medium flex items-center gap-2">
+                <Clock className="h-4 w-4 text-google-yellow" />
+                Bekleme Odası ({waitingParticipants.length})
+              </h3>
+            </div>
+            <ScrollArea className="flex-1">
+              <div className="p-2">
+                {waitingParticipants.length === 0 ? (
+                  <p className="text-white/50 text-sm text-center py-8">
+                    Bekleyen katılımcı yok
+                  </p>
+                ) : (
+                  waitingParticipants.map((p) => (
+                    <div
+                      key={p.id}
+                      className="flex items-center gap-3 p-3 rounded-lg hover:bg-white/5"
+                    >
+                      <div className="w-10 h-10 rounded-full bg-google-blue flex items-center justify-center">
+                        <span className="text-sm text-white">
+                          {p.display_name?.charAt(0) || "?"}
+                        </span>
+                      </div>
+                      <span className="text-white/90 text-sm flex-1">
+                        {p.display_name}
+                      </span>
+                      <div className="flex gap-1">
+                        <TooltipProvider>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Button
+                                size="icon"
+                                variant="ghost"
+                                onClick={() => approveParticipant(p.user_id)}
+                                className="h-8 w-8 rounded-full bg-green-500/20 hover:bg-green-500/30 text-green-400"
+                              >
+                                <CheckCircle className="h-4 w-4" />
+                              </Button>
+                            </TooltipTrigger>
+                            <TooltipContent>Onayla</TooltipContent>
+                          </Tooltip>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Button
+                                size="icon"
+                                variant="ghost"
+                                onClick={() => rejectParticipant(p.user_id)}
+                                className="h-8 w-8 rounded-full bg-red-500/20 hover:bg-red-500/30 text-red-400"
+                              >
+                                <XCircle className="h-4 w-4" />
+                              </Button>
+                            </TooltipTrigger>
+                            <TooltipContent>Reddet</TooltipContent>
+                          </Tooltip>
+                        </TooltipProvider>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </ScrollArea>
           </motion.div>
         )}
       </div>
