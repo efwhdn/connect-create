@@ -190,7 +190,14 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
-      [_ in never]: never
+      is_meeting_host: {
+        Args: { _meeting_id: string; _user_id: string }
+        Returns: boolean
+      }
+      is_meeting_participant: {
+        Args: { _meeting_id: string; _user_id: string }
+        Returns: boolean
+      }
     }
     Enums: {
       [_ in never]: never
